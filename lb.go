@@ -14,6 +14,7 @@ type RoundRobinScheduler struct {
 	servers      []string
 	serverStatus map[string]bool
 	client       *http.Client
+	mu           sync.Mutex
 }
 
 var lbObject = RoundRobinScheduler{
@@ -25,6 +26,15 @@ var lbObject = RoundRobinScheduler{
 		"http://127.0.0.1:8082/": true,
 	},
 	client: &http.Client{},
+	mu:     sync.Mutex{},
+}
+
+func getNextServerRoundRobin() string {
+	lbObject.mu.Lock()
+	serverEndpoint := lbObject.servers[lbObject.index%len(lbObject.servers)]
+	lbObject.index++
+	lbObject.mu.Unlock()
+	return serverEndpoint
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -33,12 +43,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var responses []string
-	serverEndpoint := lbObject.servers[lbObject.index%len(lbObject.servers)]
-	lbObject.index++
+
+	serverEndpoint := getNextServerRoundRobin()
 
 	if _, ok := lbObject.serverStatus[serverEndpoint]; !ok {
-		serverEndpoint = lbObject.servers[lbObject.index%len(lbObject.servers)]
-		lbObject.index++
+		serverEndpoint = getNextServerRoundRobin()
 	}
 
 	wg.Add(1)
@@ -82,14 +91,20 @@ func healthCheck() {
 		for _, server := range lbObject.servers {
 			response, err := http.Get(server)
 			if err != nil {
+				lbObject.mu.Lock()
 				delete(lbObject.serverStatus, server)
+				lbObject.mu.Unlock()
 				continue
 			}
 
 			if response.StatusCode != http.StatusOK {
+				lbObject.mu.Lock()
 				delete(lbObject.serverStatus, server)
+				lbObject.mu.Unlock()
 			} else {
+				lbObject.mu.Lock()
 				lbObject.serverStatus[server] = true
+				lbObject.mu.Unlock()
 			}
 			response.Body.Close()
 		}
