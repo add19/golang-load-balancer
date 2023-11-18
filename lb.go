@@ -6,18 +6,25 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 )
 
 type RoundRobinScheduler struct {
-	index   int
-	servers []string
-	client  *http.Client
+	index        int
+	servers      []string
+	serverStatus map[string]bool
+	client       *http.Client
 }
 
 var lbObject = RoundRobinScheduler{
 	index:   0,
 	servers: []string{"http://127.0.0.1:8080/", "http://127.0.0.1:8081/", "http://127.0.0.1:8082/"},
-	client:  &http.Client{},
+	serverStatus: map[string]bool{
+		"http://127.0.0.1:8080/": true,
+		"http://127.0.0.1:8081/": true,
+		"http://127.0.0.1:8082/": true,
+	},
+	client: &http.Client{},
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -28,6 +35,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	var responses []string
 	serverEndpoint := lbObject.servers[lbObject.index%len(lbObject.servers)]
 	lbObject.index++
+
+	if _, ok := lbObject.serverStatus[serverEndpoint]; !ok {
+		serverEndpoint = lbObject.servers[lbObject.index%len(lbObject.servers)]
+		lbObject.index++
+	}
 
 	wg.Add(1)
 	go func(endpoint string) {
@@ -63,7 +75,29 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func healthCheck() {
+	for {
+		time.Sleep(10 * time.Second)
+		fmt.Println("Checking servers")
+		for _, server := range lbObject.servers {
+			response, err := http.Get(server)
+			if err != nil {
+				delete(lbObject.serverStatus, server)
+				continue
+			}
+
+			if response.StatusCode != http.StatusOK {
+				delete(lbObject.serverStatus, server)
+			} else {
+				lbObject.serverStatus[server] = true
+			}
+			response.Body.Close()
+		}
+	}
+}
+
 func main() {
+	go healthCheck()
 	http.HandleFunc("/", handler)
 	log.Fatal(http.ListenAndServe(":80", nil))
 }
